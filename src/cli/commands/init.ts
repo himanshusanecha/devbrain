@@ -111,10 +111,9 @@ branch_note: ""
 
 function configureAgents(apiKey: string, vaultPath: string) {
   const HOME = os.homedir();
-  const cliIndex = path.resolve(__dirname, '../index.js');
   const mcpServerEntry = {
-    command: 'node',
-    args: [cliIndex, 'mcp'],
+    command: 'devbrain',
+    args: ['mcp'],
     env: {
       OBSIDIAN_API_KEY: apiKey,
       OBSIDIAN_PORT: '27124',
@@ -138,7 +137,24 @@ function configureAgents(apiKey: string, vaultPath: string) {
   }
 
   // Antigravity IDE
-  if (fs.existsSync(path.join(HOME, '.gemini', 'antigravity-ide'))) {
-    buildSchemasCommand();
+  const geminiDir = path.join(HOME, '.gemini');
+  if (fs.existsSync(geminiDir)) {
+    const configDir = path.join(geminiDir, 'config');
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    const antigravityConfigPath = path.join(configDir, 'mcp_config.json');
+    let config: any = {};
+    if (fs.existsSync(antigravityConfigPath)) {
+      try { config = JSON.parse(fs.readFileSync(antigravityConfigPath, 'utf8')); } catch { }
+    }
+    config.mcpServers = config.mcpServers ?? {};
+    config.mcpServers['devbrain'] = mcpServerEntry;
+    fs.writeFileSync(antigravityConfigPath, JSON.stringify(config, null, 2) + '\n');
+    console.log(`✅ Antigravity IDE MCP: configured (${antigravityConfigPath})`);
+
+    if (fs.existsSync(path.join(geminiDir, 'antigravity-ide'))) {
+      buildSchemasCommand();
+    }
   }
 }

@@ -1,6 +1,6 @@
 {
-  "name": "devbrain",
-  "version": "1.0.1",
+  "name": "@himanshu-sanecha/devbrain",
+  "version": "1.0.3",
   "description": "Git-aware context switching layer for AI coding agents via Obsidian vault",
   "main": "dist/mcp-server/index.js",
   "bin": {

@@ -222,24 +222,24 @@ branch_note: "[[${noteRef}]]"
 
 4. Before writing any files, verify the write_custom_doc and write_architecture_doc MCP tools are available in your
    session. If they are not available, stop immediately and tell the user:
-   "vault-bridge MCP server is not connected. Please configure it and restart the session."
+   "devbrain MCP server is not connected. Please configure it and restart the session."
    Do not write any files to the repo filesystem under any circumstances.
 
    If tools are available, call them as many times as necessary to create the following structure. Use \`write_architecture_doc\` for Architecture docs, \`write_feature_doc\` for features, etc.
 
    Folder 1 — "Architecture/"
    Create multiple Markdown files inside this folder to document the system design granularly. For example:
-   - \`Architecture/System-Overview.md\`: Exhaustive description of the system design, core purpose, design patterns, and directory structure.
-   - \`Architecture/Core-Components.md\`: Deep dive into critical classes, modules, and services.
-   - \`Architecture/Data-Flow.md\`: Comprehensive ASCII diagrams showing data movement and state lifecycles.
-   - \`Architecture/External-Integrations.md\`: List of all APIs, databases, or services.
+   - \`System-Overview.md\`: Exhaustive description of the system design, core purpose, design patterns, and directory structure.
+   - \`Core-Components.md\`: Deep dive into critical classes, modules, and services.
+   - \`Data-Flow.md\`: Comprehensive ASCII diagrams showing data movement and state lifecycles.
+   - \`External-Integrations.md\`: List of all APIs, databases, or services.
    Every file in this folder must have a Change History table at the bottom:
    | Date | Branch | Change |
    |------|--------|--------|
 
    Folder 2 — "Features/"
    Create multiple Markdown files inside this folder, one for each major feature or workflow.
-   For each feature file (e.g., \`Features/Authentication.md\`), provide:
+   For each feature file (e.g., \`Authentication.md\`), provide:
    1. User Goal
    2. Step-by-Step Flow
    3. Edge Cases & Error Handling
