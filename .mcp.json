@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "devbrain": {
+      "command": "node",
+      "args": ["${DEVBRAIN_PATH}/dist/mcp-server/index.js"],
+      "env": {
+        "OBSIDIAN_API_KEY": "${OBSIDIAN_API_KEY}",
+        "OBSIDIAN_PORT": "27124",
+        "DEVBRAIN_VAULT_PATH": "${DEVBRAIN_VAULT_PATH}"
+      }
+    }
+  }
+}
