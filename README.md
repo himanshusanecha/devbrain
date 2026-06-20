@@ -2,7 +2,7 @@
 
 > Git-aware persistent memory for AI coding agents via Obsidian.
 
-[![npm version](https://img.shields.io/npm/v/devbrain)](https://www.npmjs.com/package/devbrain)
+[![npm version](https://img.shields.io/npm/v/%40himanshu-sanecha%2Fdevbrain.svg)]
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
