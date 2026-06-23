@@ -58,7 +58,7 @@ Obsidian stays open. Hooks are silent. Agents just know.
 
 ```bash
 # 1. Install globally
-npm install -g devbrain
+npm i @himanshu-sanecha/devbrain
 
 # 2. Run the setup wizard (detects your vault, configures all agents)
 devbrain init
