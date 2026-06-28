@@ -18,15 +18,19 @@ export async function getActiveContext(ops: VaultOps, input?: { repo?: string })
 
   const { active_repo: repo, active_branch: branch, switched_at } = ctx;
 
-  const [branchNote, lastHandoff, relatedNotes] = await Promise.allSettled([
+  const [branchNote, lastHandoff, relatedNotes, openBlockers, historySummary] = await Promise.allSettled([
     ops.getBranchNote(repo, branch),
     ops.getLastHandoff(repo),
     ops.searchVault(`branch:${branch} status:active`),
+    ops.getOpenBlockers(repo),
+    ops.getHandoffSummaryBlock(repo),
   ]);
 
   const note = branchNote.status === "fulfilled" ? branchNote.value : null;
   const handoff = lastHandoff.status === "fulfilled" ? lastHandoff.value : null;
   const related = relatedNotes.status === "fulfilled" ? relatedNotes.value : [];
+  const blockers = openBlockers.status === "fulfilled" ? openBlockers.value : [];
+  const summaryBlock = historySummary.status === "fulfilled" ? historySummary.value : null;
 
   const fm = note?.frontmatter ?? {};
   const content = note?.content ?? "";
@@ -37,7 +41,7 @@ export async function getActiveContext(ops: VaultOps, input?: { repo?: string })
 
   const is_initialized = overviewSection.length > 0;
 
-  const result: any = {
+  const result: Record<string, unknown> = {
     repo,
     branch,
     switched_at,
@@ -50,6 +54,13 @@ export async function getActiveContext(ops: VaultOps, input?: { repo?: string })
           ended_at: handoff.ended_at,
         }
       : null,
+    session_history_summary: summaryBlock,
+    open_blockers: blockers.map(b => ({
+      id: b.id,
+      description: b.description,
+      branch: b.branch,
+      opened_at: b.opened_at,
+    })),
     blocked_on: blockedSection || String(fm["blocked_on"] ?? ""),
     next_session_start: nextSection || String(fm["next_session"] ?? ""),
     related_notes: related.slice(0, 5).map((r) => r.filename),
@@ -66,5 +77,5 @@ function extractSection(content: string, heading: string): string {
   const re = new RegExp(`## ${heading}\\n([\\s\\S]*?)(?=\\n## |$)`);
   const m = content.match(re);
   if (!m) return "";
-  return m[1].replace(/<!--[\\s\\S]*?-->/g, "").trim();
+  return m[1].replace(/<!--[\s\S]*?-->/g, "").trim();
 }

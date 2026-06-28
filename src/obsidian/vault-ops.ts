@@ -26,6 +26,36 @@ export interface HandoffParams {
   agent_name: string;
   doc_impact?: { docName: string; description: string }[];
   overview?: string;
+  pin?: boolean;
+  pin_reason?: string;
+}
+
+export interface FailedAttemptEntry {
+  approach: string;
+  reason_failed: string;
+  topic_tags: string[];
+  branch: string;
+}
+
+export interface BlockerEntry {
+  id: string;
+  description: string;
+  status: "open" | "resolved";
+  branch: string;
+  opened_at: string;
+  resolved_at?: string;
+  resolution?: string;
+}
+
+export interface ParsedHandoffSession {
+  date: string;
+  agent: string;
+  summary: string;
+  files_changed: string[];
+  blocked_on: string;
+  next_session_start: string;
+  pinned: boolean;
+  raw: string;
 }
 
 export interface HandoffRecord {
@@ -343,11 +373,12 @@ export class VaultOps {
   }
 
   async writeHandoff(params: HandoffParams): Promise<void> {
-    const { repo, branch, summary, files_changed, blocked_on, next_session_start, agent_name, doc_impact } = params;
+    const { repo, branch, summary, files_changed, blocked_on, next_session_start, agent_name, doc_impact, pin, pin_reason } = params;
     const now = new Date().toISOString();
+    const pinMarker = pin ? ` <!-- devbrain:pinned${pin_reason ? ` reason="${pin_reason}"` : ""} -->` : "";
 
     const handoffEntry = `
-## Session — ${now} (${agent_name})
+## Session — ${now} (${agent_name})${pinMarker}
 
 **Summary:** ${summary}
 
@@ -751,6 +782,275 @@ ${files_changed.map((f) => `- ${f}`).join("\n")}
   }
 
   // --- Configurations.md structured methods ---
+
+  // === BLOCKERS.md ===
+
+  private blockersPath(repo: string): string {
+    return `Projects/${repo}/BLOCKERS.md`;
+  }
+
+  private parseBlockersTable(content: string): BlockerEntry[] {
+    const rows = content.match(/^\| B\d+[^|]*(?:\|[^|]*){5,}\|$/gm) ?? [];
+    return rows.map(row => {
+      const cells = row.split("|").slice(1, -1).map(c => c.trim());
+      return {
+        id: cells[0] ?? "",
+        description: cells[1] ?? "",
+        status: (cells[2] === "resolved" ? "resolved" : "open") as "open" | "resolved",
+        branch: cells[3] ?? "",
+        opened_at: cells[4] ?? "",
+        resolved_at: cells[5] || undefined,
+        resolution: cells[6] || undefined,
+      };
+    });
+  }
+
+  private formatBlockerRow(b: BlockerEntry): string {
+    return `| ${b.id} | ${b.description} | ${b.status} | ${b.branch} | ${b.opened_at} | ${b.resolved_at ?? ""} | ${b.resolution ?? ""} |`;
+  }
+
+  async getOpenBlockers(repo: string): Promise<BlockerEntry[]> {
+    try {
+      const note = await this.client.getNote(this.blockersPath(repo));
+      return this.parseBlockersTable(note.content).filter(b => b.status === "open");
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) return [];
+      throw err;
+    }
+  }
+
+  async logBlocker(repo: string, entry: Omit<BlockerEntry, "id" | "opened_at" | "status">): Promise<string> {
+    const path = this.blockersPath(repo);
+    const now = new Date().toISOString().slice(0, 10);
+    let existingContent = "";
+    let existing: BlockerEntry[] = [];
+    try {
+      const note = await this.client.getNote(path);
+      existingContent = note.content;
+      existing = this.parseBlockersTable(existingContent);
+    } catch (err) {
+      if (!(err instanceof ObsidianNotFoundError)) throw err;
+    }
+    const id = `B${existing.length + 1}`;
+    const newBlocker: BlockerEntry = { id, description: entry.description, status: "open", branch: entry.branch, opened_at: now };
+    const row = this.formatBlockerRow(newBlocker);
+    if (!existingContent) {
+      const init = `# Blockers\n\n| ID | Description | Status | Branch | Opened | Resolved | Resolution |\n|----|-------------|--------|--------|--------|----------|------------|\n${row}\n`;
+      await this.client.putNote(path, init);
+    } else {
+      const lastRowIdx = existingContent.lastIndexOf("\n|");
+      const lineEnd = lastRowIdx !== -1 ? existingContent.indexOf("\n", lastRowIdx + 1) : -1;
+      const insertAt = lineEnd === -1 ? existingContent.length : lineEnd + 1;
+      const updated = existingContent.slice(0, insertAt) + row + "\n" + existingContent.slice(insertAt);
+      await this.client.putNote(path, updated);
+    }
+    return id;
+  }
+
+  async resolveBlocker(repo: string, id: string, resolution: string): Promise<void> {
+    const path = this.blockersPath(repo);
+    const note = await this.client.getNote(path);
+    const now = new Date().toISOString().slice(0, 10);
+    const blockers = this.parseBlockersTable(note.content);
+    const target = blockers.find(b => b.id === id);
+    if (!target) throw new Error(`Blocker ${id} not found in BLOCKERS.md`);
+    const updatedRow = this.formatBlockerRow({ ...target, status: "resolved", resolved_at: now, resolution });
+    const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rowRe = new RegExp(`^\\| ${escapedId} \\|[^\\n]+$`, "m");
+    await this.client.putNote(path, note.content.replace(rowRe, updatedRow));
+  }
+
+  // === FAILED_ATTEMPTS.md ===
+
+  private failedAttemptsPath(repo: string): string {
+    return `Projects/${repo}/FAILED_ATTEMPTS.md`;
+  }
+
+  async logFailedAttempt(repo: string, entry: FailedAttemptEntry): Promise<void> {
+    const path = this.failedAttemptsPath(repo);
+    const date = new Date().toISOString().slice(0, 10);
+    const tags = entry.topic_tags.join(", ");
+    const block = `\n## ${date} — ${entry.approach}\n**Tags:** ${tags}\n**Branch:** ${entry.branch}\n**Reason failed:** ${entry.reason_failed}\n\n---\n`;
+    try {
+      await this.client.appendNote(path, block);
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) {
+        await this.client.putNote(path, `# Failed Attempts\n\n> Approaches tried and abandoned — consult before re-trying.\n${block}`);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  async getFailedAttempts(repo: string, topic?: string): Promise<Array<{ date: string; approach: string; tags: string[]; reason_failed: string; branch: string }>> {
+    try {
+      const note = await this.client.getNote(this.failedAttemptsPath(repo));
+      const sections = note.content.split(/\n## /).filter(s => /^\d{4}-\d{2}-\d{2}/.test(s.trim()));
+      const parsed = sections.map(s => {
+        const header = s.split("\n")[0];
+        const dateMatch = header.match(/^(\d{4}-\d{2}-\d{2}) — (.+)/);
+        const tagsMatch = s.match(/\*\*Tags:\*\* (.+)/);
+        const branchMatch = s.match(/\*\*Branch:\*\* (.+)/);
+        const reasonMatch = s.match(/\*\*Reason failed:\*\* (.+)/);
+        return {
+          date: dateMatch?.[1] ?? "",
+          approach: dateMatch?.[2]?.trim() ?? "",
+          tags: tagsMatch?.[1]?.split(", ").map(t => t.trim()) ?? [],
+          reason_failed: reasonMatch?.[1]?.trim() ?? "",
+          branch: branchMatch?.[1]?.trim() ?? "",
+        };
+      });
+      if (!topic) return parsed;
+      const lower = topic.toLowerCase();
+      return parsed.filter(p =>
+        p.approach.toLowerCase().includes(lower) ||
+        p.tags.some(t => t.toLowerCase().includes(lower)) ||
+        p.reason_failed.toLowerCase().includes(lower)
+      );
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) return [];
+      throw err;
+    }
+  }
+
+  // === Rolling Handoff Compression ===
+
+  async parseHandoffSessions(repo: string): Promise<ParsedHandoffSession[]> {
+    let content = "";
+    try {
+      const note = await this.client.getNote(`Projects/${repo}/HANDOFF.md`);
+      content = note.content;
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) return [];
+      throw err;
+    }
+    const indices: number[] = [];
+    const sessionRe = /^## Session/gm;
+    let m: RegExpExecArray | null;
+    while ((m = sessionRe.exec(content)) !== null) {
+      indices.push(m.index);
+    }
+    return indices.map((start, i) => {
+      const end = i + 1 < indices.length ? indices[i + 1] : content.length;
+      const raw = content.slice(start, end).trimEnd();
+      const headerLine = raw.split("\n")[0];
+      const dateAgentMatch = headerLine.match(/## Session — (.+?) \((.+?)\)/);
+      const summaryMatch = raw.match(/\*\*Summary:\*\* (.+)/);
+      const blockedMatch = raw.match(/\*\*Blocked on:\*\* (.+)/);
+      const nextMatch = raw.match(/\*\*Next session start:\*\* (.+)/);
+      const filesMatch = [...raw.matchAll(/^- (.+)$/gm)].map(fm => fm[1]);
+      const pinned = /<!-- devbrain:pinned/.test(headerLine);
+      return {
+        date: dateAgentMatch?.[1]?.trim() ?? "",
+        agent: (dateAgentMatch?.[2] ?? "").replace(/\s*<!--.*-->/, "").trim(),
+        summary: summaryMatch?.[1]?.trim() ?? "",
+        files_changed: filesMatch,
+        blocked_on: blockedMatch?.[1]?.trim() ?? "",
+        next_session_start: nextMatch?.[1]?.trim() ?? "",
+        pinned,
+        raw,
+      };
+    });
+  }
+
+  private generateRollingSummary(sessions: ParsedHandoffSession[]): string {
+    if (!sessions.length) return "";
+    const dates = sessions.map(s => s.date.slice(0, 10)).filter(Boolean);
+    const from = dates[0] ?? "";
+    const to = dates[dates.length - 1] ?? "";
+    const summaries = sessions.map(s => s.summary).filter(Boolean).join(" ");
+    return `${from}–${to} (${sessions.length} sessions): ${summaries}`;
+  }
+
+  async archiveSessions(repo: string, sessions: ParsedHandoffSession[]): Promise<void> {
+    if (!sessions.length) return;
+    const monthKey = (sessions[0].date || new Date().toISOString()).slice(0, 7);
+    const archivePath = `Projects/${repo}/archive/${monthKey}-handoff-archive.md`;
+    const sessionBlocks = sessions.map(s => s.raw.trimEnd()).join("\n\n");
+    try {
+      const note = await this.client.getNote(archivePath);
+      await this.client.putNote(archivePath, note.content.trimEnd() + "\n\n" + sessionBlocks + "\n");
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) {
+        await this.client.putNote(archivePath, `# Session Archive — ${monthKey}\n\n${sessionBlocks}\n`);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  async getHandoffSummaryBlock(repo: string): Promise<string | null> {
+    try {
+      const note = await this.client.getNote(`Projects/${repo}/HANDOFF.md`);
+      const match = note.content.match(/<!-- devbrain:summary[^>]*-->([\s\S]*?)<!-- \/devbrain:summary -->/);
+      return match?.[1]?.trim() ?? null;
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) return null;
+      throw err;
+    }
+  }
+
+  async compressAndRollHandoff(repo: string, keepRecent = 3): Promise<{ compressed: number; archived: number }> {
+    const sessions = await this.parseHandoffSessions(repo);
+    const pinned = sessions.filter(s => s.pinned);
+    const compressable = sessions.filter(s => !s.pinned);
+
+    if (compressable.length <= keepRecent) {
+      return { compressed: 0, archived: 0 };
+    }
+
+    const toCompress = compressable.slice(0, compressable.length - keepRecent);
+    const toKeepFull = compressable.slice(compressable.length - keepRecent);
+
+    await this.archiveSessions(repo, toCompress);
+
+    const handoffPath = `Projects/${repo}/HANDOFF.md`;
+    let existingContent = "";
+    try {
+      const note = await this.client.getNote(handoffPath);
+      existingContent = note.content;
+    } catch (err) {
+      if (!(err instanceof ObsidianNotFoundError)) throw err;
+    }
+
+    const existingSummaryMatch = existingContent.match(/<!-- devbrain:summary[^>]*-->([\s\S]*?)<!-- \/devbrain:summary -->/);
+    const existingSummaryText = existingSummaryMatch?.[1]?.trim() ?? "";
+
+    const newLine = this.generateRollingSummary(toCompress);
+    const combinedSummary = existingSummaryText ? `${existingSummaryText}\n${newLine}` : newLine;
+    const summaryBlock = `<!-- devbrain:summary generated="${new Date().toISOString()}" -->\n${combinedSummary}\n<!-- /devbrain:summary -->`;
+
+    const allKept = [...pinned, ...toKeepFull].sort((a, b) => a.date.localeCompare(b.date));
+    const sessionBlocks = allKept.map(s => s.raw.trimEnd()).join("\n\n");
+    const newContent = `# Handoff Log\n\n${summaryBlock}\n\n${sessionBlocks}\n`;
+    await this.client.putNote(handoffPath, newContent);
+
+    return { compressed: toCompress.length, archived: toCompress.length };
+  }
+
+  async getFullHistory(repo: string, from?: string): Promise<string> {
+    const archiveFolder = `Projects/${repo}/archive`;
+    let files: string[];
+    try {
+      files = await this.client.listFolder(archiveFolder);
+    } catch (err) {
+      if (err instanceof ObsidianNotFoundError) return "No archived sessions found.";
+      throw err;
+    }
+    const archiveFiles = files.filter(f => f.endsWith("-handoff-archive.md")).sort();
+    const filtered = from ? archiveFiles.filter(f => f >= from.slice(0, 7)) : archiveFiles;
+    if (!filtered.length) return "No archived sessions found for the specified range.";
+    const contents: string[] = [];
+    for (const file of filtered) {
+      try {
+        const note = await this.client.getNote(`${archiveFolder}/${file}`);
+        contents.push(note.content);
+      } catch {
+        // skip unreadable archive files
+      }
+    }
+    return contents.join("\n\n---\n\n") || "No archived sessions found.";
+  }
 
   async upsertConfigRow(repo: string, entry: ConfigEntry): Promise<void> {
     const path = `Projects/${repo}/Configurations.md`;

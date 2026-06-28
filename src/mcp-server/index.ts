@@ -31,6 +31,11 @@ import { updatePlanHandler, updatePlanSchema } from "./tools/update-plan.js";
 import { upsertConfigEntryHandler, upsertConfigEntrySchema } from "./tools/upsert-config-entry.js";
 import { writeSprintPlanHandler, writeSprintPlanSchema } from "./tools/write-sprint-plan.js";
 import { readVaultNoteHandler } from "./tools/read-vault-note.js";
+import { logBlockerHandler, logBlockerSchema } from "./tools/log-blocker.js";
+import { resolveBlockerHandler, resolveBlockerSchema } from "./tools/resolve-blocker.js";
+import { logFailedAttemptHandler, logFailedAttemptSchema } from "./tools/log-failed-attempt.js";
+import { getFailedAttemptsHandler, getFailedAttemptsSchema } from "./tools/get-failed-attempts.js";
+import { getFullHistoryHandler, getFullHistorySchema } from "./tools/get-full-history.js";
 
 export async function startMcpServer() {
   const envFile = path.join(os.homedir(), '.devbrain.env');
@@ -84,7 +89,7 @@ export async function startMcpServer() {
   server.registerTool(
     "write_handoff",
     {
-      description: "Write a session handoff note to the vault. Call this at the end of any session where files were modified.",
+      description: "Write a session handoff note to the vault. Promotes decisions, failed attempts, and blockers to their dedicated stores, then compresses old sessions to keep context bounded. Call this at the end of any session where files were modified.",
       inputSchema: {
         summary: z.string().describe("What was accomplished this session"),
         files_changed: z.array(z.string()).describe("List of files modified"),
@@ -97,6 +102,23 @@ export async function startMcpServer() {
           description: z.string().describe("Description of how the document was impacted")
         })).optional().describe("List of project documents impacted by these changes"),
         overview: z.string().optional().describe("Short description of the branch purpose. Updates the Overview section."),
+        decisions: z.array(z.string()).optional().describe("Architectural decisions made this session — promoted to DECISIONS.md before compression"),
+        failed_attempts: z.array(z.object({
+          approach: z.string().describe("Name of the approach tried"),
+          reason_failed: z.string().describe("Why it failed"),
+          topic_tags: z.array(z.string()).describe("Tags for future search, e.g. ['retries', 'queue']"),
+        })).optional().describe("Approaches tried and abandoned — promoted to FAILED_ATTEMPTS.md so agents never repeat them"),
+        blockers_open: z.array(z.object({
+          description: z.string().describe("Description of the blocker"),
+          branch: z.string().describe("Branch where the blocker exists"),
+        })).optional().describe("New blockers encountered this session — logged to BLOCKERS.md with auto-assigned IDs"),
+        blockers_resolved: z.array(z.object({
+          id: z.string().describe("Blocker ID, e.g. B1"),
+          resolution: z.string().describe("How it was resolved"),
+        })).optional().describe("Blockers resolved this session — marked as resolved in BLOCKERS.md"),
+        pin: z.boolean().optional().describe("Pin this session so it is never compressed. Use for sessions with critical architectural decisions."),
+        pin_reason: z.string().optional().describe("Why this session is pinned"),
+        keep_recent: z.number().optional().describe("How many recent sessions to keep in full (default: 3). Older sessions are compressed into a summary paragraph."),
       }
     },
     async (input) => {
@@ -318,6 +340,36 @@ export async function startMcpServer() {
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     }
   );
+
+  // --- log_blocker ---
+  server.registerTool("log_blocker", {
+    description: "Log a new blocker to BLOCKERS.md with an auto-assigned ID. Returns the ID for use with resolve_blocker later.",
+    inputSchema: logBlockerSchema,
+  }, async (input) => logBlockerHandler(ops, input));
+
+  // --- resolve_blocker ---
+  server.registerTool("resolve_blocker", {
+    description: "Mark a blocker as resolved in BLOCKERS.md. Blockers stay visible for audit but are excluded from get_active_context.",
+    inputSchema: resolveBlockerSchema,
+  }, async (input) => resolveBlockerHandler(ops, input));
+
+  // --- log_failed_attempt ---
+  server.registerTool("log_failed_attempt", {
+    description: "Log an approach that was tried and abandoned to FAILED_ATTEMPTS.md. Call before trying a new approach that might not work — ensures future agents don't repeat the same mistake.",
+    inputSchema: logFailedAttemptSchema,
+  }, async (input) => logFailedAttemptHandler(ops, input));
+
+  // --- get_failed_attempts ---
+  server.registerTool("get_failed_attempts", {
+    description: "Search FAILED_ATTEMPTS.md for approaches that were tried and abandoned. Call before implementing something new to avoid repeating past failures.",
+    inputSchema: getFailedAttemptsSchema,
+  }, async (input) => getFailedAttemptsHandler(ops, input));
+
+  // --- get_full_history ---
+  server.registerTool("get_full_history", {
+    description: "Retrieve archived session handoffs from before the rolling compression window. Use when you need detail from older sessions that have been summarised.",
+    inputSchema: getFullHistorySchema,
+  }, async (input) => getFullHistoryHandler(ops, input));
 
   // --- RESOURCES API ---
 
